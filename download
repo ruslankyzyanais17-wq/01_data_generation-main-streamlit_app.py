@@ -1,0 +1,244 @@
+"""Offline AppTest regressions for the reviewed replacement application only.
+
+No original_snapshot Python/PowerShell code is imported or executed. The tests
+only read project inputs; failure fixtures live in disposable temporary folders.
+Run with: python -B -m unittest discover -s tests -p 'test_app.py' -v
+"""
+
+import codecs
+from contextlib import contextmanager
+import csv
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from streamlit.testing.v1 import AppTest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import dataset_utils  # Reviewed replacement module; has no import-time writes.
+
+INPUT_NAMES = (
+    "privacy_threat_dataset.jsonl", "dataset_source.json",
+    "privacy_threat_dataset.csv", "privacy_threat_dataset_excel.csv",
+    "SOURCE_MANIFEST.json",
+)
+TIMEOUT = 30
+
+
+def input_hashes():
+    return {
+        name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+        for name in INPUT_NAMES
+    }
+
+
+@contextmanager
+def working_directory(path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+class AppRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with (ROOT / "privacy_threat_dataset.jsonl").open(encoding="utf-8") as stream:
+            cls.records = [json.loads(line) for line in stream]
+        cls.initial_hashes = input_hashes()
+
+    def tearDown(self):
+        self.assertEqual(input_hashes(), self.initial_hashes,
+                         "Application interaction changed an input file")
+
+    def app(self, path=None):
+        at = AppTest.from_file(str(path or ROOT / "app.py"), default_timeout=TIMEOUT).run()
+        self.assert_clean(at)
+        return at
+
+    def assert_clean(self, at):
+        self.assertEqual([item.value for item in at.exception], [])
+
+    def metrics(self, at):
+        return {item.label: item.value for item in at.metric}
+
+    def assert_filtered_ids(self, at, expected):
+        self.assert_clean(at)
+        self.assertEqual(self.metrics(at)["Отфильтровано"], str(len(expected)))
+        self.assertEqual(at.dataframe[0].value["id"].tolist(), expected)
+
+    def test_initial_metrics_and_independent_platform_counts(self):
+        at = self.app()
+        self.assertEqual(self.metrics(at), {
+            "Всего записей": "13500", "Отфильтровано": "13500",
+            "Языков в наборе": "2 (en, ru)", "Уникальных текстов в наборе": "324",
+        })
+        self.assertEqual(at.multiselect(key="filter_languages").value, ["en", "ru"])
+        self.assertEqual(len(at.multiselect(key="filter_sources").value), 48)
+        self.assertEqual(len(at.multiselect(key="filter_platforms").value), 15)
+        displayed = at.dataframe[0].value
+        self.assertEqual(int(displayed["platform"].value_counts().sum()), 13_500)
+        self.assertEqual(set(displayed["origin_status"]), {"template_match"})
+        self.assertEqual(displayed["base_example_id"].nunique(), 48)
+
+    def test_search_is_literal_and_retains_exact_order(self):
+        at = self.app()
+        for query in ("[", "[ИМЯ]", "(", ".", "a|b", "\\", "номер"):
+            with self.subTest(query=query):
+                at.text_input(key="search_query").set_value(query).run()
+                expected = [row["id"] for row in self.records
+                            if query.casefold() in row["text"].casefold()]
+                self.assert_filtered_ids(at, expected)
+                if query == "[":
+                    self.assertGreater(len(expected), 0)
+                    self.assertLess(len(expected), 13_500)
+
+    def test_empty_multiselects_return_zero_and_reset_restores_everything(self):
+        at = self.app()
+        for key in ("filter_languages", "filter_platforms", "filter_sources", "filter_labels"):
+            with self.subTest(key=key):
+                at.multiselect(key=key).set_value([]).run()
+                self.assert_filtered_ids(at, [])
+                self.assertTrue(any("Ничего не найдено" in item.value for item in at.warning))
+                # Reload must preserve the deliberate empty selection too.
+                at.button(key="reload_data").click().run()
+                self.assertEqual(at.multiselect(key=key).value, [])
+                self.assert_filtered_ids(at, [])
+                at.button(key="reset_filters").click().run()
+                self.assert_filtered_ids(at, list(range(1, 13_501)))
+                self.assertEqual(at.text_input(key="search_query").value, "")
+
+    def test_language_platform_source_and_label_filters_intersect(self):
+        at = self.app()
+        sources = [self.records[0]["source"], self.records[13]["source"]]
+        at.multiselect(key="filter_languages").set_value(["ru"])
+        at.multiselect(key="filter_platforms").set_value(["Telegram"])
+        at.multiselect(key="filter_sources").set_value(sources)
+        at.multiselect(key="filter_labels").set_value(["DOXING"])
+        at.run()
+        expected = [row["id"] for row in self.records
+                    if row["language"] == "ru" and row["source"] in sources
+                    and row["source"].startswith("Telegram (") and row["sub_label"] == "DOXING"]
+        self.assertGreater(len(expected), 0)
+        self.assert_filtered_ids(at, expected)
+        at.multiselect(key="filter_platforms").set_value(["Reddit"]).run()
+        self.assert_filtered_ids(at, [])
+
+    def test_reload_preserves_search_filters_and_export_options(self):
+        at = self.app()
+        sources = [self.records[0]["source"]]
+        at.text_input(key="search_query").set_value("[ИМЯ]")
+        at.multiselect(key="filter_languages").set_value(["ru"])
+        at.multiselect(key="filter_platforms").set_value(["Telegram"])
+        at.multiselect(key="filter_sources").set_value(sources)
+        at.multiselect(key="filter_labels").set_value(["DOXING"])
+        at.radio(key="export_scope").set_value("Весь набор")
+        at.checkbox(key="include_derived").set_value(True)
+        at.run()
+        before_ids = at.dataframe[0].value["id"].tolist()
+        before_values = {item.key: item.value for item in at.multiselect}
+        before_hashes = input_hashes()
+        at.button(key="reload_data").click().run()
+        self.assert_filtered_ids(at, before_ids)
+        self.assertEqual({item.key: item.value for item in at.multiselect}, before_values)
+        self.assertEqual(at.text_input(key="search_query").value, "[ИМЯ]")
+        self.assertEqual(at.radio(key="export_scope").value, "Весь набор")
+        self.assertTrue(at.checkbox(key="include_derived").value)
+        self.assertEqual(input_hashes(), before_hashes)
+
+    def test_export_scope_and_optional_columns_reach_real_payloads(self):
+        at = self.app()
+        at.multiselect(key="filter_languages").set_value(["en"]).run()
+        original_export = dataset_utils.export_frame
+        for scope, derived in (("Отфильтрованные записи", False), ("Весь набор", False),
+                               ("Весь набор", True), ("Отфильтрованные записи", True)):
+            with self.subTest(scope=scope, include_derived=derived):
+                captured = {}
+
+                def capture(frame, format_name, *, include_derived=False):
+                    payload = original_export(frame, format_name, include_derived=include_derived)
+                    captured[format_name] = (payload, include_derived)
+                    return payload
+
+                at.radio(key="export_scope").set_value(scope)
+                at.checkbox(key="include_derived").set_value(derived)
+                with patch.object(dataset_utils, "export_frame", side_effect=capture):
+                    at.run()
+                self.assert_clean(at)
+                self.assertEqual(set(captured), {"csv", "excel", "jsonl"})
+                self.assertEqual(len(at.get("download_button")), 3)
+                expected = self.records if scope == "Весь набор" else [
+                    row for row in self.records if row["language"] == "en"]
+                expected_fields = list(dataset_utils.FIELDS)
+                if derived:
+                    expected_fields.extend(dataset_utils.DERIVED_FIELDS)
+                json_rows = [json.loads(line) for line in captured["jsonl"][0].decode("utf-8").splitlines()]
+                self.assertEqual(len(json_rows), len(expected))
+                for actual, original in zip(json_rows, expected):
+                    self.assertEqual(list(actual), expected_fields)
+                    self.assertEqual({key: actual[key] for key in dataset_utils.FIELDS}, original)
+                    if derived:
+                        self.assertIs(type(actual["base_example_id"]), int)
+                        self.assertEqual(actual["origin_status"], "template_match")
+                for kind, delimiter in (("csv", ","), ("excel", ";")):
+                    payload, actual_derived = captured[kind]
+                    self.assertEqual(actual_derived, derived)
+                    self.assertEqual(payload.startswith(codecs.BOM_UTF8), kind == "excel")
+                    reader = csv.DictReader(io.StringIO(payload.decode("utf-8-sig"), newline=""), delimiter=delimiter)
+                    csv_rows = list(reader)
+                    self.assertEqual(reader.fieldnames, expected_fields)
+                    self.assertEqual(len(csv_rows), len(expected))
+                    for actual, original in zip(csv_rows, expected):
+                        self.assertNotIn(None, actual)
+                        for field in dataset_utils.FIELDS:
+                            expected_text = str(original[field])
+                            self.assertEqual(actual[field], expected_text)
+
+    def test_missing_or_corrupt_jsonl_shows_error_without_seed_fallback(self):
+        fixtures = {
+            "missing": None,
+            "invalid_json": b'{"id":',
+            "invalid_utf8": b"\xff\xfe\xfa",
+            "invalid_schema": b'{"id":1}\n',
+            "empty": b"",
+        }
+        for name, content in fixtures.items():
+            with self.subTest(fixture=name), tempfile.TemporaryDirectory(prefix="privacy_app_invalid_") as folder:
+                isolated = Path(folder)
+                for filename in ("app.py", "dataset_utils.py", "dataset_source.json"):
+                    (isolated / filename).write_bytes((ROOT / filename).read_bytes())
+                if content is not None:
+                    (isolated / "privacy_threat_dataset.jsonl").write_bytes(content)
+                # A CSV is present deliberately, to ensure no CSV/seed fallback.
+                (isolated / "privacy_threat_dataset.csv").write_text("id,text\n1,fallback\n", encoding="utf-8")
+                at = self.app(isolated / "app.py")
+                self.assertTrue(any("Не удалось загрузить данные" in item.value for item in at.error))
+                self.assertTrue(any("не заменяет полный набор" in item.value for item in at.info))
+                self.assertEqual(len(at.metric), 0)
+                self.assertEqual(len(at.dataframe), 0)
+                self.assertEqual(len(at.get("download_button")), 0)
+
+    def test_launch_uses_app_directory_even_with_conflicting_cwd_files(self):
+        with tempfile.TemporaryDirectory(prefix="privacy_app_cwd_") as folder:
+            unrelated = Path(folder)
+            (unrelated / "privacy_threat_dataset.jsonl").write_text("not valid JSON", encoding="utf-8")
+            (unrelated / "dataset_source.json").write_text("[]", encoding="utf-8")
+            with working_directory(unrelated):
+                at = self.app()
+            self.assertEqual(self.metrics(at)["Всего записей"], "13500")
+            self.assertEqual(self.metrics(at)["Языков в наборе"], "2 (en, ru)")
+            self.assert_filtered_ids(at, list(range(1, 13_501)))
+
+
+if __name__ == "__main__":
+    unittest.main()
