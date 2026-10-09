@@ -1,91 +1,52 @@
-﻿$srcJson = 'C:\Users\Lenovo\.gemini\antigravity\scratch\privacy_threat_dataset\dataset_source.json'
-$targetDir = 'C:\Users\Lenovo\.gemini\antigravity\scratch\privacy_threat_dataset'
-$docsDir = 'C:\Users\Lenovo\Documents'
+"""Offline export of existing JSONL; never generate or collect new examples."""
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+import shutil
+import tempfile
+import pandas as pd
+from dataset_utils import DatasetError, export_frame, read_jsonl
 
-$items = Get-Content $srcJson -Raw -Encoding UTF8 | ConvertFrom-Json
-$itemCount = $items.Count
+ROOT = Path(__file__).resolve().parent
 
-$total = 13500
+def export_dataset(source: Path, output_dir: Path) -> int:
+    records = read_jsonl(source)
+    output_dir = output_dir.resolve()
+    if output_dir.exists():
+        raise FileExistsError(f"Папка уже существует: {output_dir}. Выберите новую папку; перезапись запрещена.")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(records)
+    stage = Path(tempfile.mkdtemp(prefix=".privacy-export-", dir=output_dir.parent))
+    try:
+        for name, kind in (("privacy_threat_dataset.csv", "csv"),
+                           ("privacy_threat_dataset_excel.csv", "excel"),
+                           ("privacy_threat_dataset.jsonl", "jsonl")):
+            (stage / name).write_bytes(export_frame(frame, kind))
+        (stage / "EXPORT_INFO.json").write_text(json.dumps({
+            "source": source.name, "rows": len(records),
+            "operation": "Offline serialization only. No records generated or collected."
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # Check again before publication; the source and existing directories are untouched.
+        if output_dir.exists():
+            raise FileExistsError(f"Папка уже существует: {output_dir}")
+        stage.rename(output_dir)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+    return len(records)
 
-$csvStandard = Join-Path $targetDir 'privacy_threat_dataset.csv'
-$csvExcel    = Join-Path $targetDir 'privacy_threat_dataset_excel.csv'
-$jsonl       = Join-Path $targetDir 'privacy_threat_dataset.jsonl'
-$docExcel    = Join-Path $docsDir '2026-09-18T08-49_export_structured.csv'
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Сохранить существующие JSONL-записи в новую папку без сбора и размножения.")
+    parser.add_argument("--source", type=Path, default=ROOT / "privacy_threat_dataset.jsonl")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "exports")
+    args = parser.parse_args(argv)
+    try:
+        count = export_dataset(args.source, args.output_dir)
+    except (OSError, DatasetError) as exc:
+        parser.exit(1, f"Ошибка: {exc}\n")
+    print(f"Экспортировано {count} существующих записей в {args.output_dir.resolve()}")
+    return 0
 
-$utf8 = New-Object System.Text.UTF8Encoding($true)
-
-$swCsv   = New-Object System.IO.StreamWriter($csvStandard, $false, $utf8)
-$swExcel = New-Object System.IO.StreamWriter($csvExcel, $false, $utf8)
-$swJsonl = New-Object System.IO.StreamWriter($jsonl, $false, $utf8)
-$swDoc   = New-Object System.IO.StreamWriter($docExcel, $false, $utf8)
-
-$headerComma = 'id,sub_label,source,text,фрагмент_ИМЯ,фрагмент_ТЕЛЕФОН,фрагмент_АДРЕС,фрагмент_EMAIL,фрагмент_АККАУНТ,фрагмент_ГЕОЛОКАЦИЯ,language,is_anonymized'
-$headerSemi  = 'id;sub_label;source;text;фрагмент_ИМЯ;фрагмент_ТЕЛЕФОН;фрагмент_АДРЕС;фрагмент_EMAIL;фрагмент_АККАУНТ;фрагмент_ГЕОЛОКАЦИЯ;language;is_anonymized'
-
-$swCsv.WriteLine($headerComma)
-$swExcel.WriteLine($headerSemi)
-$swDoc.WriteLine($headerSemi)
-
-$prefRu = @('', 'Срочно в сеть: ', 'Внимание: ', 'Очередной слив данных: ', 'Найдено в открытом доступе: ', 'Опубликовано анонимно: ', 'Проверено по базам: ')
-$prefKk = @('', 'Шұғыл ақпарат: ', 'Баршаның назарына: ', 'Желіге тараған мәлімет: ', 'Анонимді түрде жарияланды: ', 'Тексерілген дерек: ', 'Чаттардан алынған ақпарат: ')
-$prefEn = @('', 'Urgent leak: ', 'Attention: ', 'Exposed publicly: ', 'Fresh data dump: ', 'OSINT alert: ')
-
-$rand = New-Object System.Random(42)
-
-for ($i = 1; $i -le $total; $i++) {
-    $base = $items[($i - 1) % $itemCount]
-    $lang = $base.language
-    $sub = $base.sub_label
-    $src = $base.source
-
-    $p = ''
-    if ($lang -eq 'kk') {
-        $p = $prefKk[$rand.Next($prefKk.Length)]
-    } elseif ($lang -eq 'ru') {
-        $p = $prefRu[$rand.Next($prefRu.Length)]
-    } else {
-        $p = $prefEn[$rand.Next($prefEn.Length)]
-    }
-
-    $txt = $p + $base.text
-
-    $hasName = if ($txt.Contains('[ИМЯ]')) { '[ИМЯ]' } else { '' }
-    $hasPhone = if ($txt.Contains('[ТЕЛЕФОН]')) { '[ТЕЛЕФОН]' } else { '' }
-    $hasAddress = if ($txt.Contains('[АДРЕС]')) { '[АДРЕС]' } else { '' }
-    $hasEmail = if ($txt.Contains('[EMAIL]')) { '[EMAIL]' } else { '' }
-    $hasAccount = if ($txt.Contains('[АККАУНТ]')) { '[АККАУНТ]' } else { '' }
-    $hasGeo = if ($txt.Contains('[ГЕОЛОКАЦИЯ]')) { '[ГЕОЛОКАЦИЯ]' } else { '' }
-
-    $escTxt = $txt.Replace(' ,  )
-    `$escSrc = `$src.Replace( ', '')
-
- $commaRow = [string]::Format('{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},true', $i, $sub, $escSrc, $escTxt, $hasName, $hasPhone, $hasAddress, $hasEmail, $hasAccount, $hasGeo, $lang)
- $swCsv.WriteLine($commaRow)
-
- $semiRow = [string]::Format('{0};{1};{2};{3};{4};{5};{6};{7};{8};{9};{10};true', $i, $sub, $escSrc, $escTxt, $hasName, $hasPhone, $hasAddress, $hasEmail, $hasAccount, $hasGeo, $lang)
- $swExcel.WriteLine($semiRow)
- $swDoc.WriteLine($semiRow)
-
- $obj = [PSCustomObject]@{
- id = $i
- sub_label = $sub
- source = $src
- text = $txt
- 'фрагмент_ИМЯ' = $hasName
- 'фрагмент_ТЕЛЕФОН' = $hasPhone
- 'фрагмент_АДРЕС' = $hasAddress
- 'фрагмент_EMAIL' = $hasEmail
- 'фрагмент_АККАУНТ' = $hasAccount
- 'фрагмент_ГЕОЛОКАЦИЯ' = $hasGeo
- language = $lang
- is_anonymized = $true
- }
- $swJsonl.WriteLine(($obj | ConvertTo-Json -Compress))
-}
-
-$swCsv.Close()
-$swExcel.Close()
-$swJsonl.Close()
-$swDoc.Close()
-
-Write-Host 'Done! Successfully written 13500 rows.'
+if __name__ == "__main__":
+    raise SystemExit(main())

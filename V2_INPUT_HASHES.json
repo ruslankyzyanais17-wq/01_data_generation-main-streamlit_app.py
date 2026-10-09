@@ -1,5 +1,9 @@
-# Offline export only. Does not generate records or change execution policy.
-$ErrorActionPreference = 'Stop'
-$scriptPath = Join-Path $PSScriptRoot 'generate_dataset.py'
-& python $scriptPath @args
-exit $LASTEXITCODE
+{
+  "previous_release": "privacy_threat_dataset_updated_2026-10-09.zip",
+  "sha256": {
+    "privacy_threat_dataset.jsonl": "b7b3ba360ee348d373f54a9ec324346de4b5e3d70c5e1d6f22d23eb8d7754e97",
+    "privacy_threat_dataset.csv": "e88589d0668c0e04afa509b1940a605419bfd66a46d4d2c39bce2d7523d09f10",
+    "privacy_threat_dataset_excel.csv": "fbc21cc838b11c0cb9f7bf8c79b7b53789cd49703d84963e64912b85b2937cda",
+    "dataset_source.json": "e49521a585124d27f85d062fd4b21959f6a5609b6203ddbec8db29dbb08a63e6"
+  }
+}

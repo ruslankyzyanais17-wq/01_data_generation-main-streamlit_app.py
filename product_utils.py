@@ -1,52 +1,53 @@
-"""Offline export of existing JSONL; never generate or collect new examples."""
+"""Presentation helpers: deterministic paging and contextual record summaries."""
 from __future__ import annotations
-import argparse
-import json
-from pathlib import Path
-import shutil
-import tempfile
+import math
 import pandas as pd
-from dataset_utils import DatasetError, export_frame, read_jsonl
 
-ROOT = Path(__file__).resolve().parent
 
-def export_dataset(source: Path, output_dir: Path) -> int:
-    records = read_jsonl(source)
-    output_dir = output_dir.resolve()
-    if output_dir.exists():
-        raise FileExistsError(f"Папка уже существует: {output_dir}. Выберите новую папку; перезапись запрещена.")
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame(records)
-    stage = Path(tempfile.mkdtemp(prefix=".privacy-export-", dir=output_dir.parent))
-    try:
-        for name, kind in (("privacy_threat_dataset.csv", "csv"),
-                           ("privacy_threat_dataset_excel.csv", "excel"),
-                           ("privacy_threat_dataset.jsonl", "jsonl")):
-            (stage / name).write_bytes(export_frame(frame, kind))
-        (stage / "EXPORT_INFO.json").write_text(json.dumps({
-            "source": source.name, "rows": len(records),
-            "operation": "Offline serialization only. No records generated or collected."
-        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        # Check again before publication; the source and existing directories are untouched.
-        if output_dir.exists():
-            raise FileExistsError(f"Папка уже существует: {output_dir}")
-        stage.rename(output_dir)
-    finally:
-        if stage.exists():
-            shutil.rmtree(stage)
-    return len(records)
+def catalog_view(frame: pd.DataFrame, unique_only: bool = False) -> pd.DataFrame:
+    view = frame.copy()
+    view['text_repeat_count'] = view.groupby('text', dropna=False)['id'].transform('size')
+    return view.drop_duplicates('text', keep='first') if unique_only else view
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Сохранить существующие JSONL-записи в новую папку без сбора и размножения.")
-    parser.add_argument("--source", type=Path, default=ROOT / "privacy_threat_dataset.jsonl")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "exports")
-    args = parser.parse_args(argv)
-    try:
-        count = export_dataset(args.source, args.output_dir)
-    except (OSError, DatasetError) as exc:
-        parser.exit(1, f"Ошибка: {exc}\n")
-    print(f"Экспортировано {count} существующих записей в {args.output_dir.resolve()}")
-    return 0
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def page_slice(frame: pd.DataFrame, page: int, size: int):
+    if size not in (25, 50, 100):
+        raise ValueError('Размер страницы должен быть 25, 50 или 100.')
+    pages = max(1, math.ceil(len(frame) / size))
+    page = max(1, min(int(page), pages))
+    start = (page - 1) * size
+    return frame.iloc[start:start + size].copy(), {
+        'page': page, 'pages': pages, 'first': start + 1 if len(frame) else 0,
+        'last': min(start + size, len(frame)), 'total': len(frame),
+    }
+
+
+def active_filter_labels(query: str, selections: dict, options: dict) -> list[str]:
+    labels = []
+    if query:
+        short = query if len(query) <= 60 else query[:57] + '…'
+        labels.append('Поиск: ' + short)
+    names = {'filter_languages': 'Языки', 'filter_platforms': 'Платформы',
+             'filter_sources': 'Источники', 'filter_labels': 'Подклассы'}
+    for key, title in names.items():
+        selected, available = selections[key], options[key]
+        if set(selected) != set(available):
+            labels.append(f'{title}: {len(selected)} из {len(available)}')
+    return labels
+
+
+def record_context(frame: pd.DataFrame, record_id: int) -> dict:
+    found = frame.loc[frame['id'].eq(record_id)]
+    if found.empty:
+        raise KeyError(f'Запись {record_id} не найдена')
+    record = found.iloc[0]
+    exact = frame.loc[frame['text'].eq(record['text'])]
+    base = record['base_example_id']
+    template = frame.iloc[:0] if pd.isna(base) else frame.loc[frame['base_example_id'].eq(base).fillna(False)]
+    return {
+        'id': int(record['id']), 'exact_count': len(exact),
+        'exact_ids': exact['id'].astype(int).tolist(),
+        'base_example_id': None if pd.isna(base) else int(base),
+        'template_count': len(template), 'template_unique_texts': template['text'].nunique(),
+        'template_ids': template['id'].astype(int).tolist(),
+    }
