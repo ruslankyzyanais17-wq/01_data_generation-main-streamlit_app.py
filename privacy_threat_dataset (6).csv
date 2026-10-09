@@ -1,0 +1,51 @@
+{
+  "source_commit": "817bf95502362171244247aa5eb630ce922db5c7",
+  "rows": 13500,
+  "unique_ids": 13500,
+  "unique_texts": 324,
+  "repeated_text_rows": 13176,
+  "seed_rows": 48,
+  "exact_template_matches": 13500,
+  "base_examples": 48,
+  "languages": {
+    "ru": 10124,
+    "en": 3376
+  },
+  "subclasses": {
+    "DOXING": 1692,
+    "DOXING_THREAT": 1692,
+    "PERSONAL_DATA_REQUEST": 1686,
+    "ADDRESS_DISCLOSURE": 1405,
+    "PHONE_DISCLOSURE": 1405,
+    "LOCATION_DISCLOSURE": 1405,
+    "IDENTITY_DISCLOSURE": 1405,
+    "PRIVATE_MESSAGE_LEAK": 1405,
+    "INTIMATE_CONTENT_LEAK": 1405
+  },
+  "platform_groups": {
+    "Telegram": 4781,
+    "ВКонтакте": 2813,
+    "Reddit": 1126,
+    "X / Twitter": 844,
+    "WhatsApp": 844,
+    "Discord": 563,
+    "Несколько платформ: 4chan + Reddit": 281,
+    "Несколько платформ: Kick + Twitch": 281,
+    "Несколько платформ: Instagram + Threads": 281,
+    "TikTok": 281,
+    "Несколько платформ: LinkedIn + Reddit": 281,
+    "Несколько платформ: Форумы + Хабр": 281,
+    "Несколько платформ: Reddit + X / Twitter": 281,
+    "Форумы": 281,
+    "Несколько платформ: BreachForums + RaidForums": 281
+  },
+  "original_source_labels": 48,
+  "original_malformed_csv_rows": 6473,
+  "original_well_formed_csv_rows": 7027,
+  "source_provenance": "Unverified source descriptions; all rows match known seed/prefix combinations. No independent collection provenance supplied.",
+  "validation_environment": {
+    "python": "3.12.14",
+    "streamlit": "1.65.0",
+    "pandas": "2.2.3"
+  }
+}

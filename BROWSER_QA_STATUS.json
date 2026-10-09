@@ -1,4 +1,4 @@
-﻿$srcJson = 'C:\Users\Lenovo\.gemini\antigravity\scratch\privacy_threat_dataset\dataset_source.json'
+$srcJson = 'C:\Users\Lenovo\.gemini\antigravity\scratch\privacy_threat_dataset\dataset_source.json'
 $targetDir = 'C:\Users\Lenovo\.gemini\antigravity\scratch\privacy_threat_dataset'
 $docsDir = 'C:\Users\Lenovo\Documents'
 

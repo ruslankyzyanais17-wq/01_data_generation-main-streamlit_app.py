@@ -1,5 +1,2 @@
-# Offline export only. Does not generate records or change execution policy.
-$ErrorActionPreference = 'Stop'
-$scriptPath = Join-Path $PSScriptRoot 'generate_dataset.py'
-& python $scriptPath @args
-exit $LASTEXITCODE
+streamlit>=1.30.0
+pandas>=2.0.0

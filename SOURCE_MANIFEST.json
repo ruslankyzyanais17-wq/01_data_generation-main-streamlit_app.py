@@ -1,20 +1,2 @@
-{
-  "repository": "https://github.com/ruslankyzyanais17-wq/01_data_generation-main-streamlit_app.py",
-  "commit": "817bf95502362171244247aa5eb630ce922db5c7",
-  "snapshot_files": {
-    "README.md": "581a5bf9cae36256a94d8a34f23a61fa948897ccb7dfcebe60c9baa978684bc9",
-    "app.py": "1120936149f723f4ace9e5ef1e8aae5b4ced222b4ed71578cd9489f56fb0fb78",
-    "auto_collector.py": "ecb08df58ad3f842593a1c408228674ec72661ce4475414cf6cbb3b637b56dc7",
-    "build_13500.ps1": "7949e3201ee3eb04d3f19a7c2bc03a98e55f4f7f295b7cff4bba9dcf2c621a3c",
-    "dataset_source.json": "e49521a585124d27f85d062fd4b21959f6a5609b6203ddbec8db29dbb08a63e6",
-    "generate_dataset.py": "8555d05b13c8c68f2230273a5104aa410768349acb05e69924579c90d34e943c",
-    "privacy_threat_dataset.csv": "fb132bce3f013b08e4d9150589db53aaf37790bc382f138190b86ce45c5609fd",
-    "privacy_threat_dataset.jsonl": "b7b3ba360ee348d373f54a9ec324346de4b5e3d70c5e1d6f22d23eb8d7754e97",
-    "privacy_threat_dataset_excel.csv": "fbc21cc838b11c0cb9f7bf8c79b7b53789cd49703d84963e64912b85b2937cda",
-    "requirements.txt": "b8d038767ceb65dab44ec845b7c4e7a6aa31eda0e5c4da8da127e33e62cdf6dc",
-    "run_build.bat": "638cdb44a49f6d84f9f4e45ba6dac486f3ec435085bd5f04e5e0a0f2c5ec7301",
-    "run_build.ps1": "6e9e581939af6a92abea562d62eba36e6f2000996f8662889cbc0a855be7a720",
-    "run_export.ps1": "cb83d0197edece95315f18e958bd31e3e61aacaece011d480c95b333f870a648"
-  },
-  "repair": "CSV files regenerated from unchanged JSONL; no row values, IDs, labels, sources, or texts changed."
-}
+streamlit==1.65.0
+pandas==2.2.3

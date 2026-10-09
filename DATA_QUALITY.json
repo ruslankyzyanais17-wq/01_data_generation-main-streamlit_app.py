@@ -1,51 +1,340 @@
-{
-  "source_commit": "817bf95502362171244247aa5eb630ce922db5c7",
-  "rows": 13500,
-  "unique_ids": 13500,
-  "unique_texts": 324,
-  "repeated_text_rows": 13176,
-  "seed_rows": 48,
-  "exact_template_matches": 13500,
-  "base_examples": 48,
-  "languages": {
-    "ru": 10124,
-    "en": 3376
-  },
-  "subclasses": {
-    "DOXING": 1692,
-    "DOXING_THREAT": 1692,
-    "PERSONAL_DATA_REQUEST": 1686,
-    "ADDRESS_DISCLOSURE": 1405,
-    "PHONE_DISCLOSURE": 1405,
-    "LOCATION_DISCLOSURE": 1405,
-    "IDENTITY_DISCLOSURE": 1405,
-    "PRIVATE_MESSAGE_LEAK": 1405,
-    "INTIMATE_CONTENT_LEAK": 1405
-  },
-  "platform_groups": {
-    "Telegram": 4781,
-    "ВКонтакте": 2813,
-    "Reddit": 1126,
-    "X / Twitter": 844,
-    "WhatsApp": 844,
-    "Discord": 563,
-    "Несколько платформ: 4chan + Reddit": 281,
-    "Несколько платформ: Kick + Twitch": 281,
-    "Несколько платформ: Instagram + Threads": 281,
-    "TikTok": 281,
-    "Несколько платформ: LinkedIn + Reddit": 281,
-    "Несколько платформ: Форумы + Хабр": 281,
-    "Несколько платформ: Reddit + X / Twitter": 281,
-    "Форумы": 281,
-    "Несколько платформ: BreachForums + RaidForums": 281
-  },
-  "original_source_labels": 48,
-  "original_malformed_csv_rows": 6473,
-  "original_well_formed_csv_rows": 7027,
-  "source_provenance": "Unverified source descriptions; all rows match known seed/prefix combinations. No independent collection provenance supplied.",
-  "validation_environment": {
-    "python": "3.12.14",
-    "streamlit": "1.65.0",
-    "pandas": "2.2.3"
-  }
+"""Privacy Threat Dataset v2: offline explorer, record context and quality report."""
+from pathlib import Path
+import json
+import math
+import pandas as pd
+import streamlit as st
+
+from dataset_utils import (DatasetError, DERIVED_FIELDS, TOKENS, enrich_records, export_frame,
+                           filter_data, language_summary, read_jsonl, read_seed)
+from product_utils import active_filter_labels, catalog_view, page_slice, record_context
+from quality_report import analyze_quality, report_to_json, findings_to_csv
+
+ROOT = Path(__file__).resolve().parent
+DATA_FILE = ROOT / "privacy_threat_dataset.jsonl"
+SEED_FILE = ROOT / "dataset_source.json"
+LANGUAGES = {"ru": "Русский (ru)", "kk": "Қазақша (kk)", "en": "English (en)"}
+SECTIONS = ["Обзор", "Каталог", "Качество"]
+st.set_page_config(page_title="Privacy Threat Dataset · исследование данных", page_icon="🛡️",
+                   layout="wide", initial_sidebar_state="expanded")
+st.html("""
+<style>
+.block-container { max-width: 1240px; padding-top: 2rem; padding-bottom: 3rem; }
+h1 { letter-spacing: -.04em; font-weight: 750; }
+h2, h3 { letter-spacing: -.02em; }
+[data-testid="stMetric"] { background: #fff; border: 1px solid #e1e8ed; border-radius: 14px;
+                         padding: 16px 18px; }
+[data-testid="stMetricLabel"] { color: #56707d; }
+[data-testid="stText"] { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
+[data-testid="stSidebar"] { border-right: 1px solid #e1e8ed; }
+@media (max-width: 640px) {
+  .block-container { padding-left: 1rem; padding-right: 1rem; padding-top: 1.2rem; }
+  h1 { font-size: 2rem; }
+  [data-testid="stMetric"] { padding: 12px 14px; }
 }
+</style>
+""")
+st.caption("PRIVACY_THREAT / ЗАДАНИЕ №6")
+st.title("Нарушения конфиденциальности")
+st.caption("Исследуйте учебные примеры, их контекст и качество. Все вычисления выполняются локально.")
+
+@st.cache_data(show_spinner=False)
+def load_data(data_path, seed_path, data_stamp, seed_stamp):
+    records = read_jsonl(data_path)
+    seed = read_seed(seed_path)
+    return records, enrich_records(records, seed)
+
+@st.cache_data(show_spinner=False)
+def quality_for(records, scope):
+    return analyze_quality(records, scope=scope)
+
+st.sidebar.title("Срез данных")
+if st.sidebar.button("Перечитать файлы", key="reload_data", width="stretch"):
+    load_data.clear()
+    quality_for.clear()
+st.sidebar.caption("Без сбора из интернета и изменения файлов.")
+
+try:
+    ds, ss = DATA_FILE.stat(), SEED_FILE.stat()
+    records, df = load_data(str(DATA_FILE), str(SEED_FILE),
+                           (ds.st_mtime_ns, ds.st_size), (ss.st_mtime_ns, ss.st_size))
+except (OSError, DatasetError) as exc:
+    st.error(f"Не удалось загрузить данные: {exc}")
+    st.info("Приложение не заменяет полный набор базовыми примерами. "
+            "Проверьте JSONL и dataset_source.json; сохраните резервную копию перед исправлением.")
+    # Schema diagnostics are possible only when the entire JSONL is syntactically readable.
+    # No malformed lines are skipped, and no source data is rewritten.
+    try:
+        raw = [json.loads(line) for line in DATA_FILE.read_text("utf-8-sig").splitlines() if line.strip()]
+        diagnostics = quality_for(raw, "full")
+        st.download_button("Скачать диагностику · JSON", report_to_json(diagnostics),
+                           file_name="privacy_quality_invalid_input.json", mime="application/json",
+                           key="invalid_quality_json")
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    st.stop()
+
+options = {
+    "filter_languages": sorted(df["language"].unique().tolist()),
+    "filter_platforms": sorted(df["platform"].unique().tolist()),
+    "filter_sources": sorted(df["source"].unique().tolist()),
+    "filter_labels": sorted(df["sub_label"].unique().tolist()),
+}
+for key, values in options.items():
+    st.session_state[key] = list(values) if key not in st.session_state else [
+        value for value in st.session_state[key] if value in values]
+
+def reset_filters():
+    for key, values in options.items():
+        st.session_state[key] = list(values)
+    st.session_state["search_query"] = ""
+    st.session_state["page_number"] = 1
+    st.session_state["_remember_page_number"] = 1
+
+def change_section(section):
+    st.session_state["navigation"] = section
+
+def restore_widget(key, default):
+    # Streamlit cleans up hidden widgets. Keep explicit navigation preferences separately.
+    if key not in st.session_state:
+        st.session_state[key] = st.session_state.get("_remember_" + key, default)
+
+def remember_widget(key):
+    st.session_state["_remember_" + key] = st.session_state[key]
+
+query = st.sidebar.text_input("Поиск по тексту", key="search_query", placeholder="[ИМЯ], номер, адрес…")
+st.sidebar.multiselect("Язык", options["filter_languages"], key="filter_languages",
+                      format_func=lambda value: LANGUAGES.get(value, value))
+for key, label in (("filter_platforms", "Платформы"),
+                   ("filter_labels", "Подклассы"), ("filter_sources", "Описание источника")):
+    with st.sidebar.expander(f"{label} · {len(st.session_state[key])} / {len(options[key])}"):
+        st.multiselect(label, options[key], key=key)
+st.sidebar.button("Сбросить фильтры", on_click=reset_filters, key="reset_filters", width="stretch")
+st.sidebar.caption("Поиск буквальный. Пустой выбор в любом списке даёт 0 записей.")
+selections = {key: st.session_state[key] for key in options}
+filtered = filter_data(df, languages=selections["filter_languages"],
+                       platforms=selections["filter_platforms"], sources=selections["filter_sources"],
+                       sub_labels=selections["filter_labels"], query=query)
+active = active_filter_labels(query, selections, options)
+st.caption(f"Найдено {len(filtered):,} из {len(df):,} записей · {language_summary(filtered)} языка")
+if active:
+    st.text("Активные фильтры: " + "  ·  ".join(active))
+else:
+    st.caption("Фильтры не ограничивают набор")
+navigation = st.radio("Раздел", SECTIONS, horizontal=True, key="navigation", label_visibility="collapsed")
+st.divider()
+
+def empty_state():
+    st.info("В этой выборке нет записей. Измените поиск или нажмите «Сбросить фильтры».")
+    st.button("Показать весь набор", on_click=reset_filters, key="empty_reset")
+
+def export_controls():
+    st.subheader("Выгрузка данных")
+    restore_widget("export_scope", "Отфильтрованные записи")
+    restore_widget("include_derived", False)
+    scope = st.radio("Объём экспорта", ["Отфильтрованные записи", "Весь набор"],
+                     horizontal=True, key="export_scope")
+    derived = st.checkbox("Добавить платформу и связь с базовым примером", key="include_derived")
+    remember_widget("export_scope")
+    remember_widget("include_derived")
+    export_df = filtered if scope == "Отфильтрованные записи" else df
+    st.caption(f"Выгрузка: {len(export_df):,} записей. Режим списка «Уникальные тексты» не удаляет строки из экспорта.")
+    suffix = "filtered" if scope == "Отфильтрованные записи" else "full"
+    for col, kind, label, extension, mime in zip(st.columns(3), ("csv", "excel", "jsonl"),
+            ("CSV · UTF-8", "Excel CSV · BOM", "JSONL · UTF-8"),
+            ("csv", "csv", "jsonl"), ("text/csv", "text/csv", "application/x-ndjson")):
+        col.download_button(label, export_frame(export_df, kind, include_derived=derived),
+                            file_name=f"privacy_threat_{suffix}_{kind}.{extension}", mime=mime,
+                            key=f"download_{kind}", width="stretch")
+    st.caption("Исходные значения сохраняются. Непроверенные текстовые колонки импортируйте в Excel как текст.")
+
+if navigation == "Обзор":
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Записей в выборке", len(filtered))
+    c2.metric("Уникальных текстов", filtered["text"].nunique())
+    c3.metric("Повторных строк", len(filtered) - filtered["text"].nunique())
+    c4.metric("Базовых примеров", filtered["base_example_id"].nunique())
+    st.write("")
+    with st.container(border=True):
+        st.subheader("Учебные шаблоны, видимый контекст")
+        matched = int(filtered["origin_status"].eq("template_match").sum())
+        st.write(f"В выборке {matched:,} из {len(filtered):,} записей совпадают с базовыми примерами "
+                 "или их известными префиксными вариантами. "
+                 "Описание source не подтверждает публикацию сообщения на указанной платформе.")
+        st.caption("Метка is_anonymized сохранена от автора и не является независимой проверкой приватности.")
+        st.button("Открыть каталог", on_click=change_section, args=("Каталог",), key="open_catalog")
+    if filtered.empty:
+        empty_state()
+    else:
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Распределение подклассов")
+            st.bar_chart(filtered["sub_label"].value_counts().rename("Записей"), horizontal=True, color="#137A72")
+        with right:
+            st.subheader("Платформы по описанию")
+            st.bar_chart(filtered["platform"].value_counts().rename("Записей"), horizontal=True, color="#547B91")
+        st.caption("Одна запись учитывается один раз. Смешанные описания источников образуют отдельные группы.")
+    with st.expander("Что важно перед обучением"):
+        st.write("Повторы и близкие варианты одного шаблона нельзя случайно распределять между train и test. "
+                 "Используйте base_example_id для группировки, проверьте похожие тексты и независимый контрольный набор. "
+                 "Здесь нет оценки качества модели или автоматического train/test-разбиения.")
+
+elif navigation == "Каталог":
+    st.subheader("Каталог записей")
+    restore_widget("page_size", 25)
+    restore_widget("unique_texts_only", False)
+    restore_widget("page_number", 1)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        size = st.selectbox("Строк на странице", [25, 50, 100], key="page_size")
+    with c2:
+        unique_only = st.toggle("Показывать только уникальные тексты", key="unique_texts_only")
+        st.caption("По одному представителю каждого точного текста в текущей выборке.")
+    remember_widget("page_size")
+    remember_widget("unique_texts_only")
+    view = catalog_view(filtered, unique_only)
+    signature = (query, tuple((key, tuple(value)) for key, value in selections.items()), size, unique_only)
+    if st.session_state.get("_catalog_signature") != signature:
+        st.session_state["page_number"] = 1
+        st.session_state["_catalog_signature"] = signature
+    pages = max(1, math.ceil(len(view) / size))
+    st.session_state["page_number"] = max(1, min(st.session_state.get("page_number", 1), pages))
+    page = st.number_input("Страница", min_value=1, max_value=pages, step=1, key="page_number",
+                           disabled=not len(view))
+    remember_widget("page_number")
+    page_df, pagination = page_slice(view, page, size)
+    st.caption(f"Строки {pagination['first']}–{pagination['last']} из {pagination['total']:,} · "
+               f"страница {pagination['page']} / {pagination['pages']}")
+    if page_df.empty:
+        empty_state()
+    else:
+        show = page_df[["id", "sub_label", "language", "platform", "text", "text_repeat_count"]]
+        st.dataframe(show, hide_index=True, width="stretch", height=420,
+                     column_config={
+                         "id": st.column_config.NumberColumn("ID", width="small", format="%d"),
+                         "sub_label": st.column_config.TextColumn("Подкласс", width="medium"),
+                         "language": st.column_config.TextColumn("Язык", width="small"),
+                         "platform": st.column_config.TextColumn("Платформа", width="medium"),
+                         "text": st.column_config.TextColumn("Текст", width="large"),
+                         "text_repeat_count": st.column_config.NumberColumn("Повторов в выборке", format="%d"),
+                     })
+        page_ids = page_df["id"].astype(int).tolist()
+        restore_widget("record_id", page_ids[0])
+        if st.session_state.get("record_id") not in page_ids:
+            st.session_state["record_id"] = page_ids[0]
+        chosen = st.selectbox("Открыть запись на этой странице", page_ids, key="record_id",
+                              format_func=lambda value: f"Запись #{value}")
+        remember_widget("record_id")
+        row_frame = df.loc[df["id"].eq(chosen)]
+        record = row_frame.iloc[0]
+        context = record_context(df, chosen)
+        with st.container(border=True):
+            st.subheader(f"Запись #{chosen}")
+            st.caption(f"{record['sub_label']} · {LANGUAGES.get(record['language'], record['language'])}")
+            st.text(record["text"])
+            st.divider()
+            left, right = st.columns(2)
+            with left:
+                st.caption("Описание источника · не проверенная ссылка")
+                st.text(record["source"])
+                st.caption("Группа платформ")
+                st.text(record["platform"])
+                present = [f"[{token}]" for token in TOKENS if f"[{token}]" in record["text"]]
+                st.caption("Токены в тексте: " + (", ".join(present) if present else "не найдены"))
+            with right:
+                st.write(f"Точных совпадений текста во всём наборе: {context['exact_count']}")
+                if context["base_example_id"] is not None:
+                    st.write(f"Базовый пример #{context['base_example_id']}: {context['template_count']} записей, "
+                             f"{context['template_unique_texts']} вариантов текста")
+                else:
+                    st.write("Связь с базовым примером не установлена")
+                st.caption(f"Авторская метка is_anonymized: {str(bool(record['is_anonymized'])).lower()}. "
+                           "Она не гарантирует отсутствие персональных данных.")
+            with st.expander("Записи той же шаблонной группы"):
+                related = df.loc[df["id"].isin(context["template_ids"])]
+                st.caption(f"Показано до 10 из {len(related)} записей полного набора, независимо от фильтров.")
+                st.dataframe(related[["id", "text", "language", "sub_label"]].head(10), hide_index=True, width="stretch")
+            original = json.loads(export_frame(row_frame, "jsonl").decode("utf-8"))
+            st.download_button("Скачать запись · JSON", json.dumps(original, ensure_ascii=False, indent=2).encode("utf-8"),
+                               file_name=f"privacy_record_{chosen}.json", mime="application/json", key="download_record")
+    st.divider()
+    export_controls()
+
+elif navigation == "Качество":
+    st.subheader("Проверка качества")
+    st.caption("Проверяемые счётчики и правила. Итоговый «балл качества» не присваивается.")
+    restore_widget("quality_scope", "Весь набор")
+    quality_scope = st.radio("Что проверить", ["Весь набор", "Текущая выборка"],
+                             horizontal=True, key="quality_scope")
+    remember_widget("quality_scope")
+    target = df if quality_scope == "Весь набор" else filtered
+    target_records = records if quality_scope == "Весь набор" else target.drop(columns=list(DERIVED_FIELDS)).to_dict("records")
+    report = quality_for(target_records, "full" if quality_scope == "Весь набор" else "filtered")
+    summary = report["summary"]
+    st.caption(f"Проверено {report['record_count']:,} записей · {quality_scope.lower()}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Замечаний к основным полям", summary["structural_issue_count"])
+    c2.metric("Повторных строк", summary["exact_text_extra_rows"])
+    c3.metric("Конфликтов меток", summary["conflicting_label_groups"])
+    c4.metric("Строк с PII-сигналами", summary["possible_pii_records"])
+    st.write("")
+    st.warning("PII-сигналы — простые эвристики, а не подтверждённые персональные данные. "
+               "Возможны ложные срабатывания и пропуски; отсутствие сигналов не доказывает анонимность.")
+    with st.container(border=True):
+        st.write(f"Пустых или отсутствующих обязательных полей: "
+                 f"{summary['missing_core_fields'] + summary['empty_core_fields']}")
+        st.write(f"Несогласованностей фрагмент-токенов: {summary['marker_issues']}")
+        st.write(f"Повторяющихся ID: {summary['duplicate_id_groups']} групп")
+        st.write(f"Групп одинаковых текстов: {summary['exact_text_duplicate_groups']}")
+        st.caption("Пустые необязательные фрагменты не считаются ошибками. Конфликт меток означает "
+                   "разные sub_label у одного и того же точного текста.")
+        st.caption(f"Замечания к основным полям касаются {summary['structural_issue_rows']} строк; "
+                   "к одной строке может относиться несколько правил.")
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Баланс подклассов")
+        st.bar_chart(pd.Series(report["class_balance"], name="Записей"), horizontal=True, color="#137A72")
+    with right:
+        st.subheader("Баланс языков")
+        st.bar_chart(pd.Series(report["language_balance"], name="Записей"), horizontal=True, color="#547B91")
+    st.subheader("Замечания по записям")
+    findings = report["findings"]
+    if findings:
+        rules = sorted({item["rule"] for item in findings})
+        if st.session_state.get("finding_rule") not in ["Все правила"] + rules:
+            st.session_state["finding_rule"] = "Все правила"
+        selected_rule = st.selectbox("Показать правило", ["Все правила"] + rules, key="finding_rule")
+        shown = findings if selected_rule == "Все правила" else [item for item in findings if item["rule"] == selected_rule]
+        st.dataframe(pd.DataFrame(shown).rename(columns={"row_number": "Строка", "record_id": "ID",
+            "rule": "Правило", "field": "Поле", "reason": "Причина"}), hide_index=True, width="stretch")
+        st.caption("В таблице только номера строк, ID и причины. Найденные фрагменты возможных персональных данных не включаются.")
+    else:
+        st.info("Индивидуальных замечаний по проверенным правилам не найдено. Повторы показаны отдельно.")
+    with st.expander("Группы точных повторов"):
+        groups = report["exact_text_duplicate_groups"]
+        st.caption(f"Показаны первые 25 из {len(groups)} групп отчёта; полный отчёт доступен ниже.")
+        if groups:
+            st.dataframe(pd.DataFrame(groups).head(25).rename(columns={"group_id": "Группа",
+                "count": "Записей", "row_numbers": "Первые строки", "record_ids": "Первые ID"}),
+                hide_index=True, width="stretch")
+    with st.expander("Правила, ограничения и объём отчёта"):
+        st.write("Проверяется формат значений, заполненность основных полей, точные повторы и согласованность токенов. "
+                 "Эвристики ищут форматы email, телефона, @аккаунта, координат и адресные подсказки. "
+                 "Имена людей и контекст идентификации надёжно не определяются. Проверка не подтверждает происхождение, "
+                 "согласие на использование, независимость примеров или соответствие законам.")
+        st.caption(report["limitations"])
+        st.json(report["rules"], expanded=False)
+        st.json(report["sampling"], expanded=False)
+    c1, c2 = st.columns(2)
+    c1.download_button("Отчёт качества · JSON", report_to_json(report), file_name=f"privacy_quality_{report['scope']}.json",
+                       mime="application/json", key="quality_json", width="stretch")
+    c2.download_button("Замечания · Excel CSV", findings_to_csv(report), file_name=f"privacy_quality_findings_{report['scope']}.csv",
+                       mime="text/csv", key="quality_csv", width="stretch")
+    st.caption("JSON содержит сводку, баланс, группы повторов, правила и ограничения; CSV — индивидуальные замечания. "
+               "Отчёт может ограничивать число перечисленных примеров; полные счётчики и пределы указаны в нём.")
+
+st.divider()
+st.caption("Источник проекта: ruslankyzyanais17-wq/01_data_generation-main-streamlit_app.py · "
+           "13 500 строк сохранены в поставляемой копии. Полного текста задания №6 нет; "
+           "соответствие всем критериям и правовая допустимость не подтверждались.")
+

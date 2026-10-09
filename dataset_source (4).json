@@ -1,0 +1,15 @@
+"""Legacy entrypoint retained only to prevent unsafe automatic overwrites.
+
+The original collector is preserved in original_snapshot/auto_collector.py.
+It must not be used for automatic dataset replacement. No network access here.
+"""
+import sys
+
+def main():
+    print("Автосбор отключён: прежний сборщик мог заменить 13 500 записей данными из 48 примеров.")
+    print("Для офлайн-экспорта используйте: python generate_dataset.py --output-dir exports_new")
+    print("Новый сбор требует отдельного проекта с проверкой источников, разметки и приватности.")
+    return 2
+
+if __name__ == "__main__":
+    sys.exit(main())
